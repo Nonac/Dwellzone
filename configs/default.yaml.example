@@ -1,0 +1,47 @@
+# Copy this file to configs/default.yaml and fill in credentials
+
+database:
+  host: "localhost"
+  port: 5432
+  name: "tokyo_transit"
+  user: "your_user"
+  password: "your_password"
+
+odpt:
+  api_key: "your_odpt_api_key"
+
+walking:
+  bbox: [35.50, 35.85, 139.40, 139.95]  # south, north, west, east
+  speed_kmh: 5.0
+  max_distance_m: 800
+  cache_dir: "data/walk_cache"
+
+parallel:
+  num_workers: 30
+  chunk_size: 5000
+
+isochrone:
+  lat: 35.7114817
+  lon: 139.7856803
+  time: "08:30"
+  duration: 60
+  interval: 10
+  calendar: null  # null = auto-infer from date
+  contour: true
+
+output:
+  dir: "outputs"
+  save_geojson: true
+  # If null, auto-generates from parameters:
+  #   outputs/contour_35.7115_139.7857_0830_60min_Weekday.html
+  #   outputs/contour_35.7115_139.7857_0830_60min_Weekday.geojson
+  filename: null
+
+import:
+  data_dir: "data"                              # root for ODPT JSON files
+  metro_gtfs_dir: "data/tokyo/TokyoMetro-Train-GTFS"
+  minitokyo3d_dir: "data/mini-tokyo-3d/data"
+
+simplify:
+  tolerance: 0.0005
+  buffer_meters: 5.0

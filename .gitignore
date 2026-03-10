@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+
+# Data & Cache
+data/
+cache/
+
+# Credentials (default.yaml contains secrets — use default.yaml.example for template)
+configs/default.yaml
+src/credentials.py
+DB_info.py
+
+# Outputs (keep dir structure via .gitkeep)
+outputs/*
+!outputs/.gitkeep
+
+# Generated files (root-level leftovers)
+*.html
+*.geojson
+*.png
+Screenshot*
+
+# Internal dev notes
+OPTIMIZATION_PROGRESS.md
+REFACTORING_PLAN.md
+
+# Jupyter / Notebooks (scratch pads, not tracked)
+.ipynb_checkpoints/
+notebooks/
+
+# IDE & Tools
+.claude/
+.vscode/
+.idea/
+
+# Environment
+.env
+.venv/
+venv/
+ENV/
+
+# OS
+.DS_Store
+Thumbs.db
