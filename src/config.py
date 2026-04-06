@@ -17,8 +17,13 @@ _bbox = _walk_cfg.get("bbox", [35.50, 35.85, 139.40, 139.95])
 TOKYO_BBOX = tuple(_bbox)
 
 # Parallel processing
-NUM_WORKERS = _parallel_cfg.get("num_workers", 30)
+NUM_WORKERS = _parallel_cfg.get("num_workers", os.cpu_count() or 1)
 CHUNK_SIZE = _parallel_cfg.get("chunk_size", 5000)
+
+# Edge buffer distance around walk network edges (meters)
+_simplify_cfg = _cfg.get("simplify", {})
+BUFFER_METERS = _simplify_cfg.get("buffer_meters", 20.0)
+SIMPLIFY_TOLERANCE = _simplify_cfg.get("tolerance", 0.0001)
 
 # Walking network cache directory
 _cache_dir = _walk_cfg.get("cache_dir", "data/walk_cache")

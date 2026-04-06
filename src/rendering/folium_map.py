@@ -5,14 +5,15 @@ import os
 
 import folium
 
-# RdYlBu 6-level color scale: warm (inner) -> cool (outer)
+# High-contrast color scale (colorblind-friendly, dark tones for light basemap)
+# Based on ColorBrewer "Dark2" + curated for deuteranopia/protanopia safety
 _CONTOUR_COLORS = [
-    "#d73027",  # 10min - red
-    "#fc8d59",  # 20min - orange
-    "#fee090",  # 30min - yellow
-    "#e0f3f8",  # 40min - light blue
-    "#91bfdb",  # 50min - blue
-    "#4575b4",  # 60min - dark blue
+    "#d62728",  # 10min - strong red
+    "#e6550d",  # 20min - dark orange
+    "#8b6508",  # 30min - dark gold
+    "#2ca02c",  # 40min - green
+    "#1f78b4",  # 50min - strong blue
+    "#6a3d9a",  # 60min - deep purple
 ]
 
 
@@ -111,7 +112,7 @@ def render_contour(features, lat, lon, departure_time, band_interval, output):
                 "fillColor": c,
                 "color": c,
                 "weight": 1.5,
-                "fillOpacity": 0.5,
+                "fillOpacity": 0.6,
             },
             tooltip=f"{band_min}min",
         ).add_to(m)

@@ -3,7 +3,7 @@
 Orchestrates: sparse matrix Dijkstra -> edge buffer -> polygon merge.
 """
 
-from src.config import DEFAULT_WALK_SPEED_KMH
+from src.config import DEFAULT_WALK_SPEED_KMH, BUFFER_METERS
 from src.timer import elapsed
 from src.walking.dijkstra import convert_graph_to_sparse, run_parallel_dijkstra
 from src.geometry.buffer import generate_edge_buffers
@@ -18,7 +18,7 @@ def batch_walk_isochrone_multi_band(
     bands_seconds,
     origin_node=None,
     walk_speed_kmh=DEFAULT_WALK_SPEED_KMH,
-    buffer_meters=5.0,
+    buffer_meters=BUFFER_METERS,
 ):
     """Generates walk isochrone polygons for multiple time bands.
 

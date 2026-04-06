@@ -24,7 +24,8 @@ def _buffer_edges_chunk(args):
 
     lines = [((p1[0], p1[1]), (p2[0], p2[1])) for p1, p2 in edges]
     multi_line = MultiLineString(lines)
-    return (chunk_id, shp_buffer(multi_line, buffer_deg, cap_style='flat'))
+    buffered = shp_buffer(multi_line, buffer_deg, cap_style='round', quad_segs=4)
+    return (chunk_id, buffered)
 
 
 def generate_edge_buffers(band_edges, bands_seconds, buffer_deg):

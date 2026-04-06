@@ -1,12 +1,68 @@
 """GeoJSON Feature construction and serialization."""
 
 import json
+import multiprocessing as mp_lib
 
-from shapely.geometry import Point, mapping
+from shapely.geometry import Point, Polygon, MultiPolygon, mapping
 from shapely.ops import unary_union
 
-from src.config import DEFAULT_WALK_SPEED_KMH, meters_to_degrees
+from src.config import DEFAULT_WALK_SPEED_KMH, SIMPLIFY_TOLERANCE, meters_to_degrees
 from src.timer import elapsed
+
+
+# Holes smaller than this area (in deg²) are filled.
+# ~22,500 m² at Tokyo latitude ≈ a 150m×150m block.
+# Fills road gaps and small open areas. Preserves rivers, lakes, large parks.
+_HOLE_AREA_THRESHOLD = 22_500.0 / (111_320.0 * 90_400.0)
+
+
+def _remove_small_holes(geom):
+    """Removes interior holes smaller than the area threshold.
+
+    Road edge buffers leave mesh-like gaps between parallel roads.
+    These are small holes (residential blocks ~50m×100m). Rivers and
+    rail corridors are much larger and are preserved.
+
+    Args:
+        geom: A Shapely Polygon or MultiPolygon.
+
+    Returns:
+        Geometry with small holes removed.
+    """
+    if geom.geom_type == "Polygon":
+        return _remove_holes_single(geom)
+    elif geom.geom_type == "MultiPolygon":
+        return MultiPolygon([_remove_holes_single(p) for p in geom.geoms])
+    return geom
+
+
+def _remove_holes_single(poly):
+    """Removes small holes from a single Polygon."""
+    kept = [ring for ring in poly.interiors
+            if Polygon(ring).area >= _HOLE_AREA_THRESHOLD]
+    return Polygon(poly.exterior, kept)
+
+
+def _simplify_geom(geom, tolerance):
+    """Fill small holes then simplify with topology preservation.
+
+    Args:
+        geom: A Shapely geometry.
+        tolerance: Simplification tolerance in degrees.
+
+    Returns:
+        Simplified geometry with small holes removed.
+    """
+    cleaned = geom.buffer(0)
+    filled = _remove_small_holes(cleaned)
+    return filled.simplify(tolerance, preserve_topology=True)
+
+
+def _simplify_worker(args):
+    """Worker: simplify a single band's polygon (for parallel execution)."""
+    band_s, polygon, tolerance = args
+    simplified = _simplify_geom(polygon, tolerance)
+    return (band_s, simplified)
 
 
 def build_isochrone_geojson(
@@ -106,7 +162,7 @@ def _build_isochrone_road(
     merged = unary_union(polygons)
 
     if simplify_tolerance > 0:
-        merged = merged.simplify(simplify_tolerance, preserve_topology=True)
+        merged = _simplify_geom(merged, simplify_tolerance)
 
     feature = {
         "type": "Feature",
@@ -283,6 +339,24 @@ def build_isochrone_bands_geojson(
             walk_speed_kmh=walk_speed_kmh,
         )
 
+        # Parallel simplify across bands
+        if simplify_tolerance > 0:
+            simplify_tasks = []
+            for band_s in bands_seconds:
+                polygon = band_polygons.get(band_s)
+                if polygon is not None and not polygon.is_empty:
+                    simplify_tasks.append((band_s, polygon, simplify_tolerance))
+
+            if simplify_tasks:
+                print(f"[@{elapsed():.1f}s] Simplifying {len(simplify_tasks)} bands in parallel...")
+                ctx = mp_lib.get_context('fork')
+                with ctx.Pool(processes=len(simplify_tasks)) as pool:
+                    simplified = pool.map(_simplify_worker, simplify_tasks)
+                for band_s, polygon in simplified:
+                    band_polygons[band_s] = polygon
+                print(f"[@{elapsed():.1f}s] Simplify done")
+
+        # Build GeoJSON features
         print(f"[@{elapsed():.1f}s] Building GeoJSON features...")
         features = []
         for band_s in bands_seconds:
@@ -291,9 +365,6 @@ def build_isochrone_bands_geojson(
             if polygon is None or polygon.is_empty:
                 feature = _empty_feature(dep_seconds, band_s)
             else:
-                if simplify_tolerance > 0:
-                    polygon = polygon.simplify(simplify_tolerance, preserve_topology=True)
-
                 deadline = dep_seconds + band_s
                 stops_in_band = sum(1 for arr in reachable.values() if arr <= deadline)
 

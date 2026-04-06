@@ -1,14 +1,18 @@
 """Sparse matrix construction and parallel scipy Dijkstra for walk isochrones."""
 
 import multiprocessing as mp_lib
+import os
+import pickle
 from dataclasses import dataclass
 
 import numpy as np
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra as scipy_dijkstra
 
-from src.config import DEFAULT_WALK_SPEED_KMH, NUM_WORKERS
+from src.config import DEFAULT_WALK_SPEED_KMH, NUM_WORKERS, WALK_CACHE_DIR
 from src.timer import elapsed
+
+_SPARSE_CACHE_PATH = os.path.join(WALK_CACHE_DIR, "sparse_matrix_cache.pkl")
 
 
 @dataclass
@@ -32,12 +36,31 @@ _ctx = None
 def convert_graph_to_sparse(G):
     """Converts a NetworkX graph to a scipy sparse matrix.
 
+    Uses disk cache to avoid recomputation on subsequent runs.
+
     Args:
         G: An undirected NetworkX graph.
 
     Returns:
         A tuple of (sparse_matrix, node_list, node_to_idx, coords_array, edges_array).
     """
+    # Try loading from disk cache
+    if os.path.exists(_SPARSE_CACHE_PATH):
+        print(f"[@{elapsed():.1f}s] Loading sparse matrix from cache...")
+        with open(_SPARSE_CACHE_PATH, "rb") as f:
+            cached = pickle.load(f)
+        # Validate cache matches current graph
+        if cached.get("n_nodes") == G.number_of_nodes():
+            print(f"  Nodes: {cached['n_nodes']}, edges: {len(cached['edges_array'])}")
+            return (
+                cached["sparse_matrix"],
+                cached["node_list"],
+                cached["node_to_idx"],
+                cached["coords_array"],
+                cached["edges_array"],
+            )
+        print("  Cache stale (node count mismatch), rebuilding...")
+
     print(f"[@{elapsed():.1f}s] Converting to sparse matrix...")
 
     node_list = list(G.nodes())
@@ -49,30 +72,36 @@ def convert_graph_to_sparse(G):
         (G.nodes[n]["x"], G.nodes[n]["y"]) for n in node_list
     ], dtype=np.float64)
 
-    # Build sparse matrix
-    rows, cols, data = [], [], []
-    edges_set = set()
+    # Vectorized edge extraction
+    edge_list = [(node_to_idx[u], node_to_idx[v], d.get("length", 1.0))
+                 for u, v, d in G.edges(data=True)]
+    edge_arr = np.array(edge_list, dtype=np.float64)
+    u_idx = edge_arr[:, 0].astype(np.int32)
+    v_idx = edge_arr[:, 1].astype(np.int32)
+    weights = edge_arr[:, 2]
 
-    for u, v, d in G.edges(data=True):
-        i, j = node_to_idx[u], node_to_idx[v]
-        weight = d.get("length", 1.0)
-        rows.append(i)
-        cols.append(j)
-        data.append(weight)
-        # Undirected: add reverse edge
-        rows.append(j)
-        cols.append(i)
-        data.append(weight)
-        # Record edge (canonical order)
-        if i < j:
-            edges_set.add((i, j))
-        else:
-            edges_set.add((j, i))
-
+    # Build undirected sparse matrix (forward + reverse edges)
+    rows = np.concatenate([u_idx, v_idx])
+    cols = np.concatenate([v_idx, u_idx])
+    data = np.concatenate([weights, weights])
     sparse_matrix = csr_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes))
 
-    edges_array = np.array(list(edges_set), dtype=np.int32)
-    print(f"  Nodes: {n_nodes}, edges: {len(edges_set)}")
+    # Canonical edge set (i < j)
+    canon = np.column_stack([np.minimum(u_idx, v_idx), np.maximum(u_idx, v_idx)])
+    edges_array = np.unique(canon, axis=0).astype(np.int32)
+    print(f"  Nodes: {n_nodes}, edges: {len(edges_array)}")
+
+    # Save to disk cache
+    with open(_SPARSE_CACHE_PATH, "wb") as f:
+        pickle.dump({
+            "n_nodes": n_nodes,
+            "sparse_matrix": sparse_matrix,
+            "node_list": node_list,
+            "node_to_idx": node_to_idx,
+            "coords_array": coords_array,
+            "edges_array": edges_array,
+        }, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print(f"  Sparse matrix cached to {_SPARSE_CACHE_PATH}")
 
     return sparse_matrix, node_list, node_to_idx, coords_array, edges_array
 
