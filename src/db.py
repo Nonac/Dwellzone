@@ -1,8 +1,51 @@
-"""Unified database layer (psycopg2)."""
+"""Unified database layer (psycopg2 + SQLAlchemy)."""
 
 import psycopg2
 from contextlib import contextmanager
 from src.credentials import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+
+
+# -- SQLAlchemy session --------------------------------------------------------
+
+@contextmanager
+def get_suumo_session():
+    """Context manager for the suumo database (SQLAlchemy).
+
+    Yields:
+        A SQLAlchemy Session bound to the suumo database.
+    """
+    from src.models import SuumoSession
+    session = SuumoSession()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+@contextmanager
+def get_transit_session():
+    """Context manager for the transit database (SQLAlchemy).
+
+    Yields:
+        A SQLAlchemy Session bound to the transit database.
+    """
+    from src.models import TransitSession
+    session = TransitSession()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+# -- psycopg2 (legacy, kept for transit module performance) --------------------
 
 
 def connect_db():
