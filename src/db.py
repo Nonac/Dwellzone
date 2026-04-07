@@ -1,8 +1,6 @@
 """Unified database layer (psycopg2 + SQLAlchemy)."""
 
-import psycopg2
 from contextlib import contextmanager
-from src.credentials import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 
 
 # -- SQLAlchemy session --------------------------------------------------------
@@ -54,6 +52,8 @@ def connect_db():
     Returns:
         A psycopg2 connection object.
     """
+    import psycopg2
+    from src.credentials import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
     return psycopg2.connect(
         host=DB_HOST,
         port=DB_PORT,
