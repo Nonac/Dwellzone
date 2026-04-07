@@ -63,7 +63,8 @@ case "${1:-help}" in
 
   cron)
     # Install crontab entry: every 3 days at 19:00 JST (10:00 UTC)
-    CRON_CMD="0 10 */3 * * cd $PROJECT_DIR && bash scripts/deploy-vps.sh run >> $LOG_DIR/cron.log 2>&1"
+    # 7-28/3 = 7th,10th,13th,...,28th; 1-4/3 = 1st,4th to cover full month
+    CRON_CMD="0 10 7-28/3,1,4 * * cd $PROJECT_DIR && bash scripts/deploy-vps.sh run >> $LOG_DIR/cron.log 2>&1"
     (crontab -l 2>/dev/null | grep -v "deploy-vps.sh"; echo "$CRON_CMD") | crontab -
     echo -e "${GREEN}Cron installed:${NC}"
     echo "  $CRON_CMD"
