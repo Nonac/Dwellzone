@@ -258,7 +258,12 @@ def crawl_query(cycle_id, prefecture, listing_type, is_new=False,
     stats["total_pages"] = total_pages
     print(f"[crawl] {label}: {total_pages} pages")
 
-    _process_page(html, cycle_id, prefecture, listing_type, is_new, stats)
+    if _process_page(html, cycle_id, prefecture, listing_type, is_new, stats):
+        print(f"[crawl] {label}: price ceiling reached, stopping")
+        _save_log(cycle_id, prefecture, listing_type, is_new, stats, log_started, "success")
+        print(f"[crawl] {label}: done — new={stats['new']} upd={stats['updated']} dup={stats['duplicates']}")
+        print_geocode_stats()
+        return stats
 
     for page in range(2, total_pages + 1):
         if max_items > 0 and stats["total_items"] >= max_items:
@@ -267,7 +272,9 @@ def crawl_query(cycle_id, prefecture, listing_type, is_new=False,
         url = client.build_search_url(prefecture, listing_type, is_new, page=page)
         try:
             html = client.fetch(url)
-            _process_page(html, cycle_id, prefecture, listing_type, is_new, stats)
+            if _process_page(html, cycle_id, prefecture, listing_type, is_new, stats):
+                print(f"[crawl] {label}: price ceiling reached at page {page}, stopping")
+                break
         except SuumoBannedException as e:
             print(f"[crawl] {label}: BANNED mid-crawl — {e}")
             stats["banned"] = True
@@ -285,10 +292,18 @@ def crawl_query(cycle_id, prefecture, listing_type, is_new=False,
 
 
 def _process_page(html, cycle_id, prefecture, listing_type, is_new, stats):
-    """Parses one page and upserts listings into the correct table."""
+    """Parses one page and upserts listings into the correct table.
+
+    Returns:
+        True if price ceiling was hit (all remaining pages can be skipped).
+    """
+    cfg = get_config().get("suumo", {})
+    price_ceiling = cfg.get("price_ceiling") or 0  # 万円, 0 = no limit
+
     items = parse_listing_page(html)
     stats["total_items"] += len(items)
     Model = get_model_for_type(listing_type)
+    hit_ceiling = False
 
     with get_suumo_session() as session:
         for item in items:
@@ -296,8 +311,14 @@ def _process_page(html, cycle_id, prefecture, listing_type, is_new, stats):
             if not suumo_id:
                 continue
 
-            pref, city, town = _parse_address(item.get("address", ""), prefecture)
             price = item.get("price")
+
+            # Results are price-ascending; if over ceiling, skip rest
+            if price_ceiling and price and price > price_ceiling:
+                hit_ceiling = True
+                continue
+
+            pref, city, town = _parse_address(item.get("address", ""), prefecture)
             area = item.get("area_sqm")
             floor_plan = item.get("floor_plan")
 
@@ -402,6 +423,8 @@ def _process_page(html, cycle_id, prefecture, listing_type, is_new, stats):
                         recorded_at=now,
                     ))
                 stats["new"] += 1
+
+    return hit_ceiling
 
 
 # -- Detail page crawl ---------------------------------------------------------

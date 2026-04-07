@@ -55,7 +55,8 @@ suumo:
   geocoder: "gsi"
   # Price filter (万円). Applied at Suumo search level.
   price_min: 8000
-  price_max:   # null = no upper limit
+  price_max:   # null = no upper limit (Suumo caps at 12000)
+  price_ceiling: 15000  # 停止爬取的价格上限 (万円). Results are price-ascending.
   # Telegram bot notifications. Get token from @BotFather, chat_id from /getUpdates.
   telegram:
     bot_token: ""
