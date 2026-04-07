@@ -33,8 +33,8 @@ def get_transit_session():
     Yields:
         A SQLAlchemy Session bound to the transit database.
     """
-    from src.models import TransitSession
-    session = TransitSession()
+    from src.models import get_transit_session_factory
+    session = get_transit_session_factory()()
     try:
         yield session
         session.commit()

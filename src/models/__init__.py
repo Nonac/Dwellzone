@@ -1,14 +1,16 @@
 """SQLAlchemy ORM base, engine, and session factories.
 
 Two separate databases:
-- transit engine: tokyo_transit (existing, used by isochrone pipeline)
-- suumo engine: suumo (new, housing data)
+- transit engine: tokyo_transit (used by isochrone pipeline)
+- suumo engine: suumo (housing data)
+
+Transit engine is lazy — only created when first accessed,
+so the crawler can run without transit DB credentials.
 """
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-from src.credentials import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 from src.settings import get_config
 
 
@@ -22,42 +24,64 @@ class SuumoBase(DeclarativeBase):
     pass
 
 
-def _transit_url():
-    return f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-
+# -- Suumo engine (always available) ------------------------------------------
 
 def _suumo_url():
     cfg = get_config().get("suumo", {}).get("database", {})
-    host = cfg.get("host", DB_HOST)
-    port = cfg.get("port", DB_PORT)
+    host = cfg.get("host", "localhost")
+    port = cfg.get("port", 5432)
     name = cfg.get("name", "suumo")
-    user = cfg.get("user", DB_USER)
-    password = cfg.get("password", DB_PASSWORD)
+    user = cfg.get("user", "")
+    password = cfg.get("password", "")
     return f"postgresql://{user}:{password}@{host}:{port}/{name}"
 
 
-transit_engine = create_engine(_transit_url(), pool_pre_ping=True)
 suumo_engine = create_engine(_suumo_url(), pool_pre_ping=True)
-
-TransitSession = sessionmaker(bind=transit_engine)
 SuumoSession = sessionmaker(bind=suumo_engine)
 
 
-def init_suumo_db(reset=False):
-    """Creates all suumo tables.
+# -- Transit engine (lazy, only for isochrone pipeline) ------------------------
 
-    Args:
-        reset: If True, drops all tables first and recreates.
-    """
+_transit_engine = None
+_TransitSession = None
+
+
+def _get_transit_engine():
+    global _transit_engine
+    if _transit_engine is None:
+        from src.credentials import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+        url = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+        _transit_engine = create_engine(url, pool_pre_ping=True)
+    return _transit_engine
+
+
+def get_transit_session_factory():
+    global _TransitSession
+    if _TransitSession is None:
+        _TransitSession = sessionmaker(bind=_get_transit_engine())
+    return _TransitSession
+
+
+# Keep backward compat: transit_engine as property-like access
+class _LazyTransitEngine:
+    """Proxy that creates transit engine on first use."""
+    def __getattr__(self, name):
+        return getattr(_get_transit_engine(), name)
+
+transit_engine = _LazyTransitEngine()
+
+
+# -- Init functions ------------------------------------------------------------
+
+def init_suumo_db(reset=False):
+    """Creates all suumo tables."""
     import src.models.suumo  # noqa: F401
 
-    suumo_engine.dispose()  # Clear cached connections
+    suumo_engine.dispose()
 
     if reset:
         SuumoBase.metadata.drop_all(bind=suumo_engine)
 
-    # Use raw DDL for idempotent index creation
-    from sqlalchemy import text
     SuumoBase.metadata.create_all(bind=suumo_engine, checkfirst=True)
     print("[models] Suumo tables created/verified")
 
@@ -65,5 +89,6 @@ def init_suumo_db(reset=False):
 def init_transit_db():
     """Creates all transit tables. Safe to call repeatedly."""
     import src.models.transit  # noqa: F401
-    TransitBase.metadata.create_all(bind=transit_engine, checkfirst=True)
+    engine = _get_transit_engine()
+    TransitBase.metadata.create_all(bind=engine, checkfirst=True)
     print("[models] Transit tables created/verified")
