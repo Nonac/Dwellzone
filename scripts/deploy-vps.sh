@@ -21,7 +21,6 @@ set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE_FILE="$PROJECT_DIR/docker/suumo-crawler/docker-compose.yml"
-ENV_FILE="$PROJECT_DIR/docker/suumo-crawler/.env"
 LOG_DIR="$PROJECT_DIR/logs"
 
 # Colors
@@ -35,11 +34,11 @@ case "${1:-help}" in
     docker compose -f "$COMPOSE_FILE" build
 
     echo ""
-    if [ ! -f "$ENV_FILE" ]; then
-      echo -e "${RED}Missing .env file!${NC}"
+    if [ ! -f "$PROJECT_DIR/configs/default.yaml" ]; then
+      echo -e "${RED}Missing configs/default.yaml!${NC}"
       echo "Create it from the example:"
-      echo "  cp $PROJECT_DIR/docker/suumo-crawler/.env.example $ENV_FILE"
-      echo "  vim $ENV_FILE  # fill in ZeroTier IP and DB password"
+      echo "  cp $PROJECT_DIR/configs/default.yaml.example $PROJECT_DIR/configs/default.yaml"
+      echo "  vim $PROJECT_DIR/configs/default.yaml  # fill in DB host, credentials, Telegram token"
       exit 1
     fi
 

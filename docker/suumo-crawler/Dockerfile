@@ -11,6 +11,7 @@ COPY requirements-crawler.txt .
 RUN pip install --no-cache-dir -r requirements-crawler.txt
 
 COPY src/ src/
+COPY scripts/ scripts/
 COPY configs/ configs/
 
 CMD ["python", "-m", "src.scraper.pipeline"]
