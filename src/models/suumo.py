@@ -125,8 +125,10 @@ class ListingMixin:
     def crawl_cycle_id(cls):
         return Column(Integer, ForeignKey("crawl_cycles.id"), nullable=False)
 
+    status = Column(Text, default="active")  # active / delisted
     first_seen_at = Column(DateTime, default=_utcnow)
     last_seen_at = Column(DateTime, default=_utcnow)
+    delisted_at = Column(DateTime)           # When listing disappeared from Suumo
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -204,6 +206,19 @@ class PriceHistory(SuumoBase):
     price = Column(BigInteger)
     crawl_cycle_id = Column(Integer, ForeignKey("crawl_cycles.id"))
     recorded_at = Column(DateTime, default=_utcnow)
+
+
+# -- Geocode cache -------------------------------------------------------------
+
+class GeocodeCache(SuumoBase):
+    """Address → coordinates cache to avoid repeated GSI API calls."""
+    __tablename__ = "geocode_cache"
+
+    id = Column(Integer, primary_key=True)
+    address = Column(Text, nullable=False, unique=True, index=True)
+    latitude = Column(Float)
+    longitude = Column(Float)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 # -- Crawl detail log ----------------------------------------------------------

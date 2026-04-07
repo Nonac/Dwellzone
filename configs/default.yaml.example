@@ -32,15 +32,36 @@ isochrone:
 output:
   dir: "outputs"
   save_geojson: true
-  # If null, auto-generates from parameters:
-  #   outputs/contour_35.7115_139.7857_0830_60min_Weekday.html
-  #   outputs/contour_35.7115_139.7857_0830_60min_Weekday.geojson
   filename: null
 
 import:
-  data_dir: "data"                              # root for ODPT JSON files
+  data_dir: "data"
   metro_gtfs_dir: "data/tokyo/TokyoMetro-Train-GTFS"
   minitokyo3d_dir: "data/mini-tokyo-3d/data"
+
+suumo:
+  database:
+    host: "localhost"
+    port: 5432
+    name: "suumo"
+    user: "your_user"
+    password: "your_password"
+  # 首都圏: 13=東京, 14=神奈川, 11=埼玉, 12=千葉
+  prefectures: [13, 14, 11, 12]
+  listing_types: ["mansion", "kodate"]
+  include_new: true
+  request_delay: [2, 5]
+  max_pages_per_query: 0
+  geocoder: "gsi"
+  # Price filter (万円). Applied at Suumo search level.
+  price_min: 8000
+  price_max:   # null = no upper limit
+  # Telegram bot notifications. Get token from @BotFather, chat_id from /getUpdates.
+  telegram:
+    bot_token: ""
+    chat_id: ""
+  # Safety: min ratio of found/active to allow delist (0.5 = 50%)
+  safety_threshold: 0.5
 
 simplify:
   tolerance: 0.0005

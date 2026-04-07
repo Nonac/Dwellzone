@@ -65,6 +65,7 @@ def main():
             start_cycle, finish_cycle, crawl_query, crawl_details_for_type,
         )
         from src.scraper.suumo_client import BS_CODES
+        from src.scraper import notify
 
         cfg = load_config(args.config)
         suumo_cfg = cfg.get("suumo", {})
@@ -73,19 +74,39 @@ def main():
         include_new = suumo_cfg.get("include_new", True)
 
         cycle_id = start_cycle()
+        notify.crawl_started(cycle_id, prefectures, types)
+
+        total_stats = {"new": 0, "updated": 0, "duplicates": 0, "errors": 0}
+        banned = False
         for pref in prefectures:
             for ltype in types:
-                crawl_query(cycle_id, pref, ltype, is_new=False,
-                            max_pages=args.max_pages, max_items=args.max_items)
-                if include_new and (ltype, True) in BS_CODES:
-                    crawl_query(cycle_id, pref, ltype, is_new=True,
+                s = crawl_query(cycle_id, pref, ltype, is_new=False,
                                 max_pages=args.max_pages, max_items=args.max_items)
+                for k in total_stats:
+                    total_stats[k] += s.get(k, 0)
+                if s.get("banned"):
+                    banned = True
+                    break
 
-        if not args.skip_details:
-            for ltype in types:
-                crawl_details_for_type(cycle_id, ltype)
+                if not banned and include_new and (ltype, True) in BS_CODES:
+                    s = crawl_query(cycle_id, pref, ltype, is_new=True,
+                                    max_pages=args.max_pages, max_items=args.max_items)
+                    for k in total_stats:
+                        total_stats[k] += s.get(k, 0)
+                    if s.get("banned"):
+                        banned = True
+                        break
+            if banned:
+                break
 
-        finish_cycle(cycle_id)
+        if banned:
+            notify.alert_banned(cycle_id, total_stats)
+        else:
+            if not args.skip_details:
+                for ltype in types:
+                    crawl_details_for_type(cycle_id, ltype)
+            finish_cycle(cycle_id)
+            notify.crawl_completed(cycle_id, "completed", total_stats)
     else:
         from src.scraper.pipeline import run_full_crawl
         run_full_crawl(max_pages=args.max_pages, max_items=args.max_items,

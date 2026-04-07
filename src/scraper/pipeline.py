@@ -24,12 +24,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from src.db import get_suumo_session
 from src.models.suumo import (
-    CrawlCycle, Mansion, Kodate, PriceHistory, CrawlLog,
+    CrawlCycle, Mansion, Kodate, PriceHistory, CrawlLog, GeocodeCache,
     compute_content_hash, get_model_for_type,
 )
-from src.scraper.suumo_client import SuumoClient, BS_CODES
+from src.scraper.suumo_client import SuumoClient, SuumoBannedException, BS_CODES
 from src.scraper.parser import parse_listing_page, parse_total_pages, parse_detail_page
 from src.scraper.geocoder import geocode_address
+from src.scraper import notify
 from src.settings import get_config
 
 
@@ -53,10 +54,60 @@ def _parse_address(address, prefecture_code):
     return pref, city, town
 
 
+_geocode_stats = {"api": 0, "cache": 0, "skip": 0}
+
+
+def _geocode_cached(session, address):
+    """Geocodes an address, using DB cache to avoid repeated API calls.
+
+    Returns:
+        (lat, lon, geom_wkt) tuple.
+    """
+    if not address:
+        return None, None, None
+
+    # Check cache first
+    cached = session.query(GeocodeCache).filter_by(address=address).first()
+    if cached:
+        _geocode_stats["cache"] += 1
+        lat, lon = cached.latitude, cached.longitude
+        if lat and lon:
+            return lat, lon, f"SRID=4326;POINT({lon} {lat})"
+        return None, None, None
+
+    # Call GSI API
+    _geocode_stats["api"] += 1
+    lat, lon = geocode_address(address)
+
+    # Store in cache (even if None, to avoid retrying bad addresses)
+    session.add(GeocodeCache(address=address, latitude=lat, longitude=lon))
+    session.flush()
+
+    if lat and lon:
+        return lat, lon, f"SRID=4326;POINT({lon} {lat})"
+    return None, None, None
+
+
+def print_geocode_stats():
+    """Prints geocoding statistics."""
+    s = _geocode_stats
+    print(f"[geocode] api={s['api']} cache={s['cache']} skip_existing={s['skip']}")
+    _geocode_stats.update({"api": 0, "cache": 0, "skip": 0})
+
+
+def _count_active():
+    """Returns total active listings across both tables."""
+    with get_suumo_session() as session:
+        total = 0
+        for Model in [Mansion, Kodate]:
+            total += session.query(Model).filter(Model.status == "active").count()
+        return total
+
+
 # -- Cycle management ----------------------------------------------------------
 
 def start_cycle():
-    """Creates a new CrawlCycle and returns its ID."""
+    """Creates a new CrawlCycle. Used by partial/test crawls."""
     with get_suumo_session() as session:
         cycle = CrawlCycle(started_at=_now(), status="running")
         session.add(cycle)
@@ -64,6 +115,53 @@ def start_cycle():
         cycle_id = cycle.id
     print(f"[crawl] Started cycle #{cycle_id}")
     return cycle_id
+
+
+def start_or_resume_cycle():
+    """Resumes an interrupted cycle, or creates a new one.
+
+    If a cycle with status='running' exists, it was interrupted.
+    Resume it instead of creating a new one, so listings already
+    crawled in that cycle keep their cycle_id.
+
+    Returns:
+        (cycle_id, resumed) tuple.
+    """
+    with get_suumo_session() as session:
+        existing = (
+            session.query(CrawlCycle)
+            .filter(CrawlCycle.status == "running")
+            .order_by(CrawlCycle.id.desc())
+            .first()
+        )
+        if existing:
+            print(f"[crawl] Resuming interrupted cycle #{existing.id}")
+            return existing.id, True
+
+        cycle = CrawlCycle(started_at=_now(), status="running")
+        session.add(cycle)
+        session.flush()
+        cycle_id = cycle.id
+
+    print(f"[crawl] Started cycle #{cycle_id}")
+    return cycle_id, False
+
+
+def _get_completed_queries(cycle_id):
+    """Returns set of (prefecture, listing_type, is_new) already completed in this cycle."""
+    pref_codes = {"東京都": 13, "神奈川県": 14, "埼玉県": 11, "千葉県": 12}
+    completed = set()
+    with get_suumo_session() as session:
+        logs = (
+            session.query(CrawlLog)
+            .filter(CrawlLog.crawl_cycle_id == cycle_id)
+            .filter(CrawlLog.status.in_(["success", "banned"]))
+            .all()
+        )
+        for log in logs:
+            pref_code = pref_codes.get(log.prefecture, log.prefecture)
+            completed.add((pref_code, log.listing_type, log.is_new))
+    return completed
 
 
 def finish_cycle(cycle_id, status="completed", stats=None, purge=False):
@@ -84,34 +182,32 @@ def finish_cycle(cycle_id, status="completed", stats=None, purge=False):
             cycle.stats = stats
 
     if purge:
-        purged = purge_stale(cycle_id)
-        print(f"[crawl] Cycle #{cycle_id} {status}. Purged {purged} stale listings.")
+        delisted = mark_delisted(cycle_id)
+        print(f"[crawl] Cycle #{cycle_id} {status}. Delisted {delisted} stale listings.")
     else:
         print(f"[crawl] Cycle #{cycle_id} {status}.")
 
 
-def purge_stale(current_cycle_id):
-    """Deletes listings not updated in the current cycle from both tables.
+def mark_delisted(current_cycle_id):
+    """Marks listings not seen in the current cycle as delisted.
+
+    Listings that reappear in a future cycle will be set back to 'active'.
 
     Returns:
-        Number of deleted rows.
+        Number of newly delisted rows.
     """
+    now = _now()
     total = 0
     with get_suumo_session() as session:
         for Model in [Mansion, Kodate]:
-            stale_hashes = (
-                session.query(Model.content_hash)
-                .filter(Model.crawl_cycle_id != current_cycle_id)
-                .subquery()
-            )
-            session.query(PriceHistory).filter(
-                PriceHistory.content_hash.in_(stale_hashes.select())
-            ).delete(synchronize_session=False)
-
             count = (
                 session.query(Model)
                 .filter(Model.crawl_cycle_id != current_cycle_id)
-                .delete(synchronize_session=False)
+                .filter(Model.status == "active")
+                .update({
+                    Model.status: "delisted",
+                    Model.delisted_at: now,
+                }, synchronize_session=False)
             )
             total += count
     return total
@@ -146,6 +242,11 @@ def crawl_query(cycle_id, prefecture, listing_type, is_new=False,
     url = client.build_search_url(prefecture, listing_type, is_new, page=1)
     try:
         html = client.fetch(url)
+    except SuumoBannedException as e:
+        print(f"[crawl] {label}: BANNED — {e}")
+        stats["banned"] = True
+        _save_log(cycle_id, prefecture, listing_type, is_new, stats, log_started, "banned")
+        return stats
     except Exception as e:
         print(f"[crawl] {label}: failed: {e}")
         _save_log(cycle_id, prefecture, listing_type, is_new, stats, log_started, "failed")
@@ -167,6 +268,10 @@ def crawl_query(cycle_id, prefecture, listing_type, is_new=False,
         try:
             html = client.fetch(url)
             _process_page(html, cycle_id, prefecture, listing_type, is_new, stats)
+        except SuumoBannedException as e:
+            print(f"[crawl] {label}: BANNED mid-crawl — {e}")
+            stats["banned"] = True
+            break
         except Exception as e:
             print(f"[crawl] {label}: page {page} error: {e}")
             stats["errors"] += 1
@@ -175,6 +280,7 @@ def crawl_query(cycle_id, prefecture, listing_type, is_new=False,
 
     _save_log(cycle_id, prefecture, listing_type, is_new, stats, log_started, "success")
     print(f"[crawl] {label}: done — new={stats['new']} upd={stats['updated']} dup={stats['duplicates']}")
+    print_geocode_stats()
     return stats
 
 
@@ -210,17 +316,13 @@ def _process_page(html, cycle_id, prefecture, listing_type, is_new, stats):
                 stats["duplicates"] += 1
                 continue
 
-            # Geocode
-            lat, lon, geom_wkt = None, None, None
             addr = item.get("address", "")
-            if addr:
-                lat, lon = geocode_address(addr)
-                if lat and lon:
-                    geom_wkt = f"SRID=4326;POINT({lon} {lat})"
-
             now = _now()
 
             if existing:
+                # Existing listing: reuse coordinates, skip geocoding
+                _geocode_stats["skip"] += 1
+
                 # Update: bump cycle, check price change
                 if price and existing.price and price != existing.price:
                     session.add(PriceHistory(
@@ -238,14 +340,17 @@ def _process_page(html, cycle_id, prefecture, listing_type, is_new, stats):
                 existing.last_seen_at = now
                 existing.updated_at = now
                 existing.raw_fields = item.get("raw_fields")
-                if lat and lon:
-                    existing.latitude = lat
-                    existing.longitude = lon
-                    existing.geom = geom_wkt
+                # Reactivate if previously delisted
+                if existing.status == "delisted":
+                    existing.status = "active"
+                    existing.delisted_at = None
                 # Reset detail_fetched_at so detail page is re-crawled
                 existing.detail_fetched_at = None
                 stats["updated"] += 1
             else:
+                # New listing: geocode with cache
+                lat, lon, geom_wkt = _geocode_cached(session, addr)
+
                 # Build common kwargs
                 kwargs = dict(
                     suumo_id=suumo_id,
@@ -448,40 +553,80 @@ def _save_log(cycle_id, prefecture, listing_type, is_new, stats, started_at, sta
 # -- Full crawl ----------------------------------------------------------------
 
 def run_full_crawl(max_pages=0, max_items=0, skip_details=False):
-    """Runs a complete weekly crawl cycle.
+    """Runs a complete weekly crawl cycle with resume support.
 
-    1. Start new cycle
-    2. Phase 1: Crawl list pages for all (prefecture, type) combos
-    3. Phase 2: Crawl detail pages for new/updated listings
-    4. Phase 3: Purge stale listings from previous cycle
-    5. Mark cycle completed
+    If a previous cycle was interrupted (status='running'), it resumes
+    from where it left off. Already-completed (prefecture, type, is_new)
+    combos are skipped based on crawl_logs.
+
+    1. Start or resume cycle
+    2. Phase 1: Crawl list pages (skip completed combos)
+    3. Phase 2: Crawl detail pages (skip already-fetched)
+    4. Phase 3: Safety check + mark delisted
     """
     cfg = get_config().get("suumo", {})
     prefectures = cfg.get("prefectures", [13])
     listing_types = cfg.get("listing_types", ["mansion", "kodate"])
     include_new = cfg.get("include_new", True)
 
-    cycle_id = start_cycle()
+    cycle_id, resumed = start_or_resume_cycle()
+
+    if resumed:
+        completed = _get_completed_queries(cycle_id)
+        print(f"[crawl] Resuming: {len(completed)} queries already done")
+        notify.crawl_started(cycle_id, prefectures, listing_types)
+    else:
+        completed = set()
+        notify.crawl_started(cycle_id, prefectures, listing_types)
+
     total_stats = {"new": 0, "updated": 0, "duplicates": 0, "errors": 0}
+    banned = False
 
     # Phase 1: List pages
     print("\n[crawl] === Phase 1: List Pages ===")
     for pref in prefectures:
         for ltype in listing_types:
             # 中古
-            s = crawl_query(cycle_id, pref, ltype, is_new=False,
-                            max_pages=max_pages, max_items=max_items)
-            for k in total_stats:
-                total_stats[k] += s.get(k, 0)
-
-            # 新築
-            if include_new and (ltype, True) in BS_CODES:
-                s = crawl_query(cycle_id, pref, ltype, is_new=True,
+            if (pref, ltype, False) not in completed:
+                s = crawl_query(cycle_id, pref, ltype, is_new=False,
                                 max_pages=max_pages, max_items=max_items)
                 for k in total_stats:
                     total_stats[k] += s.get(k, 0)
 
-    # Phase 2: Detail pages
+                if s.get("banned"):
+                    banned = True
+                    break
+            else:
+                print(f"[crawl] pref={pref} {ltype}: skipped (already done)")
+
+            # 新築
+            if include_new and (ltype, True) in BS_CODES:
+                if (pref, ltype, True) not in completed:
+                    s = crawl_query(cycle_id, pref, ltype, is_new=True,
+                                    max_pages=max_pages, max_items=max_items)
+                    for k in total_stats:
+                        total_stats[k] += s.get(k, 0)
+
+                    if s.get("banned"):
+                        banned = True
+                        break
+                else:
+                    print(f"[crawl] pref={pref} new_{ltype}: skipped (already done)")
+
+        if banned:
+            break
+
+        # Progress update after each prefecture
+        notify.crawl_progress(cycle_id, total_stats)
+
+    # Ban detected → keep cycle as 'running' so next attempt resumes
+    if banned:
+        print("\n[crawl] === ABORT: Suumo ban detected ===")
+        print("[crawl] Cycle stays 'running' for resume on next attempt.")
+        notify.alert_banned(cycle_id, total_stats)
+        return
+
+    # Phase 2: Detail pages (detail_fetched_at IS NULL = natural resume)
     if not skip_details:
         print("\n[crawl] === Phase 2: Detail Pages ===")
         detail_stats = {"fetched": 0, "errors": 0}
@@ -492,10 +637,43 @@ def run_full_crawl(max_pages=0, max_items=0, skip_details=False):
         total_stats["details_fetched"] = detail_stats["fetched"]
         total_stats["detail_errors"] = detail_stats["errors"]
 
-    # Phase 3: Purge + finish
+    # Phase 3: Safety check + finish
     print("\n[crawl] === Phase 3: Cleanup ===")
     status = "completed" if total_stats["errors"] == 0 else "partial"
-    finish_cycle(cycle_id, status=status, stats=total_stats, purge=True)
+
+    active_count = _count_active()
+    found_count = total_stats["new"] + total_stats["updated"]
+    threshold = cfg.get("safety_threshold", 0.5)
+
+    # On resume, found_count only reflects THIS run. Add listings already
+    # in this cycle from previous runs.
+    if resumed:
+        with get_suumo_session() as session:
+            for Model in [Mansion, Kodate]:
+                found_count += (
+                    session.query(Model)
+                    .filter(Model.crawl_cycle_id == cycle_id)
+                    .count()
+                )
+
+    if active_count > 0 and found_count < active_count * threshold:
+        print(f"[crawl] SAFETY: found {found_count}/{active_count} listings "
+              f"(< {threshold:.0%}), skipping delist")
+        finish_cycle(cycle_id, status="suspicious", stats=total_stats, purge=False)
+        notify.alert_suspicious(cycle_id, found_count, active_count, threshold)
+    else:
+        finish_cycle(cycle_id, status=status, stats=total_stats, purge=True)
+        # Count delisted
+        delisted = 0
+        with get_suumo_session() as session:
+            for Model in [Mansion, Kodate]:
+                delisted += (
+                    session.query(Model)
+                    .filter(Model.status == "delisted",
+                            Model.crawl_cycle_id != cycle_id)
+                    .count()
+                )
+        notify.crawl_completed(cycle_id, status, total_stats, delisted)
 
     print(f"\n[crawl] === Cycle #{cycle_id} Summary ===")
     for k, v in total_stats.items():

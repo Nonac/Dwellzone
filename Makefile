@@ -7,7 +7,7 @@ from src.settings import load_config; load_config(); \
 from src.models import suumo_engine, init_suumo_db; \
 from sqlalchemy import text; \
 conn = suumo_engine.connect(); \
-conn.execute(text('DROP TABLE IF EXISTS mansions, kodates, price_history, crawl_logs, crawl_cycles, listings CASCADE')); \
+conn.execute(text('DROP TABLE IF EXISTS mansions, kodates, price_history, crawl_logs, crawl_cycles, geocode_cache, listings CASCADE')); \
 conn.commit(); conn.close(); \
 print('Old tables dropped.'); \
 init_suumo_db(); \

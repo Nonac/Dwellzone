@@ -3,6 +3,8 @@ services:
     build:
       context: ../..
       dockerfile: docker/suumo-crawler/Dockerfile
+    volumes:
+      - ../../configs:/app/configs:ro
     environment:
       - DB_HOST=${DB_HOST}        # ZeroTier IP of local PostgreSQL server
       - DB_PORT=${DB_PORT:-5432}

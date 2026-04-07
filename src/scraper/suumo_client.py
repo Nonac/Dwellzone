@@ -43,11 +43,10 @@ BS_CODES = {
     ("kodate", True): "022",     # 新築一戸建て
 }
 
-# Kept for backward compat check in pipeline
-AREA_BASED_PREFIXES = {
-    ("kodate", False): "chukoikkodate",
-    ("kodate", True): "ikkodate",
-}
+
+class SuumoBannedException(Exception):
+    """Raised when Suumo appears to have blocked the crawler."""
+    pass
 
 
 class SuumoClient:
@@ -65,12 +64,19 @@ class SuumoClient:
     def fetch(self, url, max_retries=3):
         """Fetches a URL with rate limiting and retry.
 
+        Detects Suumo ban/error pages and raises SuumoBannedException
+        instead of returning garbage HTML.
+
         Args:
             url: Target URL (with query string already included).
             max_retries: Max retry attempts.
 
         Returns:
             Response text (HTML string).
+
+        Raises:
+            SuumoBannedException: If Suumo returns an error/ban page.
+            requests.RequestException: On network errors after all retries.
         """
         for attempt in range(max_retries):
             self._session.headers["User-Agent"] = random.choice(_USER_AGENTS)
@@ -79,8 +85,26 @@ class SuumoClient:
 
             try:
                 resp = self._session.get(url, timeout=30)
+
+                # HTTP 403/503 = banned
+                if resp.status_code in (403, 503):
+                    raise SuumoBannedException(
+                        f"HTTP {resp.status_code} — banned: {url}")
+
                 resp.raise_for_status()
+
+                # Suumo returns エラー page for "no results" or bad params.
+                # This is NOT a ban — treat as empty page.
+                if "エラー" in resp.text[:2000] and len(resp.text) < 30000:
+                    print(f"[suumo] Empty/error page (not banned): {url[:80]}")
+                    return resp.text  # parser will find 0 items
+
                 return resp.text
+
+            except SuumoBannedException:
+                # Don't retry bans — escalate immediately
+                raise
+
             except requests.RequestException as e:
                 if attempt < max_retries - 1:
                     wait = (attempt + 1) * 5
