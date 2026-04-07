@@ -608,6 +608,8 @@ def run_full_crawl(max_pages=0, max_items=0, skip_details=False):
     # Phase 1: List pages
     print("\n[crawl] === Phase 1: List Pages ===")
     for pref in prefectures:
+        pref_stats = {"new": 0, "updated": 0, "duplicates": 0, "errors": 0}
+
         for ltype in listing_types:
             # 中古
             if (pref, ltype, False) not in completed:
@@ -615,6 +617,7 @@ def run_full_crawl(max_pages=0, max_items=0, skip_details=False):
                                 max_pages=max_pages, max_items=max_items)
                 for k in total_stats:
                     total_stats[k] += s.get(k, 0)
+                    pref_stats[k] += s.get(k, 0)
 
                 if s.get("banned"):
                     banned = True
@@ -629,6 +632,7 @@ def run_full_crawl(max_pages=0, max_items=0, skip_details=False):
                                     max_pages=max_pages, max_items=max_items)
                     for k in total_stats:
                         total_stats[k] += s.get(k, 0)
+                        pref_stats[k] += s.get(k, 0)
 
                     if s.get("banned"):
                         banned = True
@@ -640,7 +644,7 @@ def run_full_crawl(max_pages=0, max_items=0, skip_details=False):
             break
 
         # Progress update after each prefecture
-        notify.crawl_progress(cycle_id, total_stats)
+        notify.crawl_prefecture_done(cycle_id, pref, pref_stats, total_stats)
 
     # Ban detected → keep cycle as 'running' so next attempt resumes
     if banned:

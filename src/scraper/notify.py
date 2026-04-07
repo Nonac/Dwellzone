@@ -6,7 +6,7 @@ in configs/default.yaml under suumo.telegram.
 All methods are safe to call even if not configured (no-op).
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import requests
 
@@ -33,8 +33,10 @@ def _send(text):
         pass
 
 
+_JST = timezone(timedelta(hours=9))
+
 def _now_str():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return datetime.now(_JST).strftime("%Y-%m-%d %H:%M JST")
 
 
 # -- Lifecycle messages --------------------------------------------------------
@@ -51,29 +53,38 @@ def crawl_started(cycle_id, prefectures, listing_types):
     )
 
 
-def crawl_progress(cycle_id, stats):
+_PREF_NAMES = {13: "東京", 14: "神奈川", 11: "埼玉", 12: "千葉"}
+
+
+def crawl_prefecture_done(cycle_id, prefecture, pref_stats, total_stats):
+    """Sent after each prefecture completes."""
+    pref_name = _PREF_NAMES.get(prefecture, str(prefecture))
     _send(
-        f"📊 Cycle #{cycle_id} progress\n"
-        f"new={stats.get('new', 0)} "
-        f"updated={stats.get('updated', 0)} "
-        f"dup={stats.get('duplicates', 0)} "
-        f"errors={stats.get('errors', 0)}"
+        f"📊 Cycle #{cycle_id} — *{pref_name}* done\n"
+        f"  this: new={pref_stats.get('new', 0)} "
+        f"upd={pref_stats.get('updated', 0)} "
+        f"dup={pref_stats.get('duplicates', 0)}\n"
+        f"  total: new={total_stats.get('new', 0)} "
+        f"upd={total_stats.get('updated', 0)} "
+        f"err={total_stats.get('errors', 0)}"
     )
 
 
 def crawl_completed(cycle_id, status, stats, delisted=0):
-    details = (
-        f"new={stats.get('new', 0)}, "
-        f"updated={stats.get('updated', 0)}, "
-        f"delisted={delisted}"
-    )
+    lines = [
+        f"new={stats.get('new', 0)}",
+        f"updated={stats.get('updated', 0)}",
+        f"delisted={delisted}",
+    ]
     if stats.get("details_fetched"):
-        details += f", detail_pages={stats['details_fetched']}"
+        lines.append(f"detail pages={stats['details_fetched']}")
+    if stats.get("errors", 0) > 0:
+        lines.append(f"errors={stats['errors']}")
 
     icon = "✅" if status == "completed" else "⚠️"
     _send(
         f"{icon} *Crawl {status}* — cycle #{cycle_id}\n"
-        f"{details}\n"
+        f"{', '.join(lines)}\n"
         f"{_now_str()}"
     )
 
